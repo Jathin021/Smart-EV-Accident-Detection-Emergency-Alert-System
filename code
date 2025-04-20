@@ -1,0 +1,169 @@
+#include <SoftwareSerial.h>
+#include <LiquidCrystal.h>
+#include "DHT.h"
+
+// Pin definitions
+#define DHT11_PIN 5               // DHT11 temperature sensor pin
+#define CURRENT_SENSOR A0         // ACS712 current sensor pin
+#define VOLTAGE_SENSOR A1         // Voltage sensor pin
+#define TILT_SENSOR 6             // Tilt sensor digital pin
+#define RELAY 7                   // Relay control pin for motor
+#define COOLING_FAN 4             // Cooling fan control pin
+#define ALCOHOL_SENSOR 3          // Alcohol sensor digital pin
+
+// Initialize peripherals
+SoftwareSerial mySerial(2, 3);    // Serial for GSM/GPS (TX, RX)
+LiquidCrystal lcd(13, 12, 11, 10, 9, 8);
+DHT dht11(DHT11_PIN, DHT11);
+
+// Variables
+char gps_location[40];
+char num[15] = "9030775530";      // Replace with recipient phone number
+unsigned long lastBatteryUpdate = 0;
+int battery_percentage = 100;
+
+void setup() {
+    pinMode(COOLING_FAN, OUTPUT);
+    pinMode(RELAY, OUTPUT);
+    pinMode(CURRENT_SENSOR, INPUT);
+    pinMode(VOLTAGE_SENSOR, INPUT);
+    pinMode(TILT_SENSOR, INPUT);
+    pinMode(ALCOHOL_SENSOR, INPUT);
+
+    digitalWrite(RELAY, LOW);
+    digitalWrite(COOLING_FAN, LOW);
+
+    Serial.begin(9600);
+    mySerial.begin(9600);
+    lcd.begin(16, 2);
+    lcd.print("ACCIDENT DETECT");
+    lcd.setCursor(0, 1);
+    lcd.print("AND ALERT SYS");
+    delay(3000);
+    lcd.clear();
+    lcd.print("READY");
+    delay(1000);
+}
+
+float getTemperature() {
+    float sum = 0.0;
+    int valid = 0;
+    for (int i = 0; i < 5; i++) {
+        float t = dht11.readTemperature();
+        if (!isnan(t)) {
+            sum += t;
+            valid++;
+        }
+        delay(200);
+    }
+    return (valid > 0) ? (sum / valid) : 25.0;
+}
+
+int mapBatteryPercentage(int analogValue) {
+    float voltage = analogValue * (5.0 / 1023.0);         // Convert analog to voltage
+    float actualVoltage = voltage * ((30.0 + 7.5) / 7.5); // Based on voltage divider (R1 = 30k, R2 = 7.5k)
+    return map(actualVoltage * 100, 0, 1185, 0, 100);      // Map 0V to 11.85V into 0-100%
+}
+
+void getGPSLocation() {
+    char lat[15] = {0};
+    char lon[15] = {0};
+    char ns, ew;
+
+    while (true) {
+        if (Serial.find("$GPRMC")) {
+            for (int i = 0; i < 14; i++) while (!Serial.available()) {}
+            Serial.read();
+
+            for (int i = 0; i < 9; i++) while (!Serial.available()) lat[i] = Serial.read();
+            while (!Serial.available()) ns = Serial.read();
+            for (int i = 0; i < 10; i++) while (!Serial.available()) lon[i] = Serial.read();
+            while (!Serial.available()) ew = Serial.read();
+
+            float latitude = atof(lat) / 100.0;
+            float longitude = atof(lon) / 100.0;
+            if (ns == 'S') latitude = -latitude;
+            if (ew == 'W') longitude = -longitude;
+
+            snprintf(gps_location, sizeof(gps_location), "https://maps.google.com/?q=%.6f,%.6f", latitude, longitude);
+            break;
+        }
+    }
+}
+
+void sendSMS(const char* msg) {
+    mySerial.println("AT+CMGF=1");
+    delay(1000);
+    mySerial.print("AT+CMGS=\"");
+    mySerial.print(num);
+    mySerial.println("\"");
+    delay(1000);
+    mySerial.print(msg);
+    mySerial.println(gps_location);
+    delay(1000);
+    mySerial.write(26);
+    delay(5000);
+}
+
+void loop() {
+    int tilt_status = digitalRead(TILT_SENSOR);
+    int alcohol_status = digitalRead(ALCOHOL_SENSOR);
+    float temperature = getTemperature();
+    int voltageValue = analogRead(VOLTAGE_SENSOR);
+
+    // Battery percentage update using mapping technique
+    if (millis() - lastBatteryUpdate >= 10000) {
+        lastBatteryUpdate = millis();
+        battery_percentage = mapBatteryPercentage(voltageValue);
+        battery_percentage = constrain(battery_percentage, 0, 100);
+    }
+
+    // LCD Display
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Battery: ");
+    lcd.print(battery_percentage);
+    lcd.print("%");
+
+    lcd.setCursor(0, 1);
+    lcd.print("Temp:");
+    lcd.print(temperature, 1);
+    lcd.print("C");
+
+    // Cooling fan logic
+    if (temperature > 40.0) {
+        digitalWrite(COOLING_FAN, HIGH);
+    } else {
+        digitalWrite(COOLING_FAN, LOW);
+    }
+
+    // Alcohol detection
+    if (alcohol_status == HIGH) {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Alcohol Detected!");
+        lcd.setCursor(0, 1);
+        lcd.print("Alert Sent!");
+        getGPSLocation();
+        sendSMS("Alert! Driver is drunk. Location: ");
+        delay(3000);
+    }
+
+    // Accident detection
+    if (tilt_status == LOW) {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Accident Detected");
+        lcd.setCursor(0, 1);
+        lcd.print("Sending Alert...");
+        getGPSLocation();
+        sendSMS("Accident detected! Location: ");
+        
+        // Post-accident safety: DC motor runs for 5 sec
+        digitalWrite(RELAY, HIGH);
+        delay(5000);
+        digitalWrite(RELAY, LOW);
+    }
+
+    delay(1000);
+}
