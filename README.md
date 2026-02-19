@@ -72,6 +72,6 @@ An Arduino-based mini project designed to enhance vehicle safety through acciden
 
 ---
 
-> Developed by: SRIJA M, YOGESH S, JATHIN P  
+> Developed by: JATHIN PUSULURI  
 > Guide: Dr. SRIRANJANI R, SR. Assistant Professor, SEEE
 
